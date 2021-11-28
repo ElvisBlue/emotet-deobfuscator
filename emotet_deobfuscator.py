@@ -39,39 +39,41 @@ class CEmotetCFF(optblock_t):
     def CorrectBlock(self, mba, dispatchReg, statusList):
         blockCnt = mba.qty
         changed = 0
-
+        
         fixStatusList = []
-
+        wontFixStatusList = []
+        
         for i in range(1, blockCnt - 1):
             currentBlock = mba.get_mblock(i)
-
-            #If block is not BLT_1WAY, we skip
-            if currentBlock.type != BLT_1WAY:
-                continue
-
+            
             #We find micro instruction mov dispatchReg, const
             mins = currentBlock.head
             while mins != currentBlock.tail:
-
+            
                 if mins == None:
                     break
-
-                #print(mins.dstr())
-                if mins != None and mins.opcode == m_mov and mins.l.t == mop_n and mins.d.is_reg():
+                    
+                if mins.opcode == m_mov and mins.l.t == mop_n and mins.d.is_reg():
                     if get_mreg_name(mins.d.r, mins.d.size) == dispatchReg:
+                        #print(mins.dstr())
                         status = mins.l.value(False)
                         if status in statusList:
+                        
+                            if currentBlock.type != BLT_1WAY:
+                                wontFixStatusList.append(status)
+                                break
+
                             #Get block match with status
                             dstBlock = mba.get_mblock(statusList[status])
-
+                            
                             #We delete mov dispatchReg, const instruction
                             currentBlock.make_nop(mins)
-
+                            
                             #Check
                             if dstBlock.serial == currentBlock.serial:
                                 break
-
-
+                            
+                            
                             #Insert/replace goto block
                             minsGoto = minsn_t(currentBlock.tail.ea)
                             if currentBlock.tail.opcode == m_goto:
@@ -84,27 +86,30 @@ class CEmotetCFF(optblock_t):
                                 minsGoto.iprops = 0
                                 currentBlock.insert_into_block(minsGoto, currentBlock.tail)
 
+                            
+                            
                             #Correct predset and succset
                             for oldDstBlockSerial in currentBlock.succset:
                                 oldDstBlock = mba.get_mblock(oldDstBlockSerial)
                                 oldDstBlock.predset._del(currentBlock.serial)
-
+                            
                             for oldPresetSerial in dstBlock.predset:
                                 oldPresetBlock = mba.get_mblock(oldPresetSerial)
+                                
 
                             dstBlock.predset.push_back(currentBlock.serial)
-
+                            
                             currentBlock.succset.clear()
                             currentBlock.succset.push_back(dstBlock.serial)
-
+                            
                             mba.verify(True)
-
-                            fixStatusList.append(status)
-                            #print("Fix goto from block %d to block %d" % (currentBlock.serial, dstBlock.serial))
-
+                            
+                            if status not in wontFixStatusList:
+                                if status not in fixStatusList:
+                                    fixStatusList.append(status)
+                            
                             #process next block
                             break
-                
                 
                 #Update to handle control flow status set like this
                 #v0 = result != 0 ? 61721445 : 200024545;
@@ -122,13 +127,14 @@ class CEmotetCFF(optblock_t):
                                     status2 = (mins.r.value(False) + subMins1.r.value(False)) & 0xFFFFFFFF
                                     if status1 in statusList and status2 in statusList:
                                         #We need to do 2 thing: Fix current block from 1WAY to 2WAY and insert new block. This is an if/else stament
+                                        
+                                        #TODO: Fix the bug
                                         if currentBlock.tail.opcode == m_goto:
                                             currentBlock.make_nop(currentBlock.tail)
                                         
                                         for oldDstBlockSerial in currentBlock.succset:
                                             oldDstBlock = mba.get_mblock(oldDstBlockSerial)
                                             oldDstBlock.predset._del(currentBlock.serial)
-
                                         currentBlock.succset.clear()
                                         
                                         newDstBlockSerial = statusList[status2]
@@ -144,7 +150,6 @@ class CEmotetCFF(optblock_t):
                                         insertedJnzIns.r.make_number(subMins4.r.value(False), 4)
                                         insertedJnzIns.d = mop_t()
                                         insertedJnzIns.d.make_blkref(newDstBlockSerial)
-
                                         currentBlock.insert_into_block(insertedJnzIns, currentBlock.tail)
                                         
                                         #I don't know why currentBlock.type = BLT_2WAY throw exception so set it to BLT_NONE (not computed yet)
@@ -153,6 +158,7 @@ class CEmotetCFF(optblock_t):
                                             
                                         #Because new block will be inserted before current block so we use currentBlock.serial + 1
                                         newInsertedBlock = mba.insert_block(currentBlock.serial + 1)
+
                                             
                                         #After insert new block, We should update block sertial in statusList
                                         #Old statuses in predset and succset were updated by insert_block even in current block so we don't have to care about it
@@ -183,12 +189,19 @@ class CEmotetCFF(optblock_t):
                                         currentBlock.mark_lists_dirty()
                                         
                                         mba.verify(True)
+                                        
                                         fixStatusList.append(status1)
                                         fixStatusList.append(status2)
+                                            
                                         break
-                                        
+                
                 mins = mins.next
-        return fixStatusList
+        
+        #Process final fixStatusList to return
+        fixStatusList = list(dict.fromkeys(fixStatusList))
+        wontFixStatusList = list(dict.fromkeys(wontFixStatusList))
+        finalFixStatusList = [x for x in fixStatusList if x not in wontFixStatusList]
+        return finalFixStatusList
 
     def CleanDispatch(self, mba, dispatchReg, fixStatusList):
         dispatchCleanerObj = CDispatchCleaner()
