@@ -234,7 +234,6 @@ class CEmotetCFF(optblock_t):
         #Perform optimize
         mba.mark_chains_dirty()
         mba.optimize_local(0)
-        mba.optimize_global()
         mba.verify(True)
 
         return changed
